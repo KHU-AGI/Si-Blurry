@@ -1,30 +1,26 @@
 import os
 import sys
-import random
 import time
-import datetime
-import torch
-import torch.backends.cudnn as cudnn
-import torch.distributed as dist
-import torch.multiprocessing as mp
-import os
 import random
-from collections import defaultdict
+import datetime
 import numpy as np
 import torch
-from randaugment import RandAugment
-from torch import nn
+import torch.nn as nn
+import torch.distributed as dist
+import torch.multiprocessing as mp
+import torch.backends.cudnn as cudnn
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from utils.onlinesampler import OnlineSampler, OnlineTestSampler
+from collections import defaultdict
+from randaugment import RandAugment
+
+from models import get_model
+from datasets import get_dataset
 from utils.augment import Cutout
-from utils.data_loader import get_statistics
-from datasets import *
-from utils.train_utils import select_model, select_optimizer, select_scheduler
 from utils.memory import Memory, DummyMemory
-import torch.cuda.profiler as profiler
-import pyprof
-pyprof.init()
+from utils.online_sampler import OnlineSampler, OnlineTestSampler
+from utils.tensor_dataset import TensorDataset
+from utils.train_utils import select_optimizer, select_scheduler
 
 ########################################################################################################################
 # This is trainer with a DistributedDataParallel                                                                       #
@@ -36,13 +32,15 @@ pyprof.init()
 
 class _Trainer():
     def __init__(self, *args, **kwargs) -> None:
+
         self.mode    = kwargs.get("mode")
-        self.dataset = kwargs.get("dataset")
-        
-        self.n_tasks = kwargs.get("n_tasks")
+
         self.n   = kwargs.get("n")
         self.m   = kwargs.get("m")
         self.rnd_NM  = kwargs.get("rnd_NM")
+
+        self.n_tasks = kwargs.get("n_tasks")
+        self.dataset_name = kwargs.get("dataset")
         self.rnd_seed    = kwargs.get("rnd_seed")
 
         self.memory_size = kwargs.get("memory_size")
@@ -53,27 +51,17 @@ class _Trainer():
         self.batchsize  = kwargs.get("batchsize")
         self.n_worker    = kwargs.get("n_worker")
         self.lr  = kwargs.get("lr")
-
         self.init_model  = kwargs.get("init_model")
         self.init_opt    = kwargs.get("init_opt")
         self.topk    = kwargs.get("topk")
         self.use_amp = kwargs.get("use_amp")
         self.transforms  = kwargs.get("transforms")
-
         self.reg_coef    = kwargs.get("reg_coef")
         self.data_dir    = kwargs.get("data_dir")
         self.debug   = kwargs.get("debug")
         self.note    = kwargs.get("note")
-        #* for Prompt Based
         self.selection_size = kwargs.get("selection_size")
-        # self.alpha = kwargs.get("alpha")
-        # self.gamma = kwargs.get("gamma")
-        # self.beta = kwargs.get("beta")
-        # self.charlie = kwargs.get("charlie")
-        # self.use_baseline = kwargs.get("use_baseline")
 
-        self.profile = kwargs.get("profile")        
-        
         self.eval_period     = kwargs.get("eval_period")
         self.temp_batchsize  = kwargs.get("temp_batchsize")
         self.online_iter     = kwargs.get("online_iter")
@@ -81,15 +69,15 @@ class _Trainer():
         self.workers_per_gpu     = kwargs.get("workers_per_gpu")
         self.imp_update_period   = kwargs.get("imp_update_period")
 
+        # for distributed training
         self.dist_backend = 'nccl'
         self.dist_url = 'env://'
-        # self.dist_url = 'tcp://' + os.environ['MASTER_ADDR'] + ':' + os.environ['MASTER_PORT']
 
         self.lr_step     = kwargs.get("lr_step")    # for adaptive LR
         self.lr_length   = kwargs.get("lr_length")  # for adaptive LR
         self.lr_period   = kwargs.get("lr_period")  # for adaptive LR
 
-        self.memory_epoch    = kwargs.get("memory_epoch")    # for RM
+        self.memory_epoch    = kwargs.get("memory_epoch") # for RM
         self.distilling  = kwargs.get("distilling") # for BiC
         self.agem_batch  = kwargs.get("agem_batch") # for A-GEM
         self.mir_cands   = kwargs.get("mir_cands")  # for MIR
@@ -101,10 +89,10 @@ class _Trainer():
         self.ngpus_per_nodes = torch.cuda.device_count()
         self.world_size = 1
         if "WORLD_SIZE" in os.environ and os.environ["WORLD_SIZE"] != '':
-            self.world_size  = int(os.environ["WORLD_SIZE"]) * self.ngpus_per_nodes
+            self.world_size = int(os.environ["WORLD_SIZE"]) * self.ngpus_per_nodes
         else:
-            self.world_size  = self.world_size * self.ngpus_per_nodes
-        self.distributed     = self.world_size > 1
+            self.world_size = self.world_size * self.ngpus_per_nodes
+        self.distributed = self.world_size > 1
 
         if self.distributed:
             self.batchsize = self.batchsize // self.world_size
@@ -116,86 +104,12 @@ class _Trainer():
 
         self.exposed_classes = []
         
-        os.makedirs(f"{self.log_path}/logs/{self.dataset}/{self.note}", exist_ok=True)
-        os.makedirs(f"{self.log_path}/tensorboard/{self.dataset}/{self.note}", exist_ok=True)
-        return
-
-    def setup_distributed_dataset(self):
-
-        self.datasets = {
-        "cifar10": CIFAR10,
-        "cifar100": CIFAR100,
-        "svhn": SVHN,
-        "fashionmnist": FashionMNIST,
-        "mnist": MNIST,
-        "tinyimagenet": TinyImageNet,
-        "notmnist": NotMNIST,
-        "cub200": CUB200,
-        "imagenet": ImageNet,
-        "imagenet-r": Imagenet_R,
-        }
-
-        mean, std, n_classes, inp_size, _ = get_statistics(dataset=self.dataset)
-        if self.model_name in ['vit', 'vit_finetune', 'L2P', 'ours', 'DualPrompt']:
-            print(self.model_name)
-            inp_size = 224    
-        self.n_classes = n_classes
-        self.inp_size = inp_size
-        self.mean = mean
-        self.std = std
-
-        train_transform = []
-        self.cutmix = "cutmix" in self.transforms 
-        if "cutout" in self.transforms:
-            train_transform.append(Cutout(size=16))
-            if self.gpu_transform:
-                self.gpu_transform = False
-        if "randaug" in self.transforms:
-            train_transform.append(RandAugment())
-            if self.gpu_transform:
-                self.gpu_transform = False
-        if "autoaug" in self.transforms:
-            if 'cifar' in self.dataset:
-                train_transform.append(transforms.AutoAugment(transforms.AutoAugmentPolicy('cifar10')))
-            elif 'imagenet' in self.dataset:
-                train_transform.append(transforms.AutoAugment(transforms.AutoAugmentPolicy('imagenet')))
-            elif 'svhn' in self.dataset:
-                train_transform.append(transforms.AutoAugment(transforms.AutoAugmentPolicy('svhn')))
-                
-        self.train_transform = transforms.Compose([
-                lambda x: (x * 255).to(torch.uint8),
-                transforms.Resize((inp_size, inp_size)),
-                transforms.RandomCrop(inp_size, padding=4),
-                transforms.RandomHorizontalFlip(),
-                *train_transform,
-                lambda x: x.float() / 255,
-                # transforms.ToTensor(),
-                transforms.Normalize(mean, std),])
-        print(f"Using train-transforms {train_transform}")
-        self.test_transform = transforms.Compose([
-                transforms.Resize((inp_size, inp_size)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean, std),])
-        self.inp_size = inp_size
-
-        _r = dist.get_rank() if self.distributed else None       # means that it is not distributed
-        _w = dist.get_world_size() if self.distributed else None # means that it is not distributed
-
-        self.train_dataset   = self.datasets[self.dataset](root=self.data_dir, train=True,  download=True, transform=transforms.ToTensor())
-        self.online_iter_dataset = OnlineIterDataset(self.train_dataset, 1)
-        self.test_dataset    = self.datasets[self.dataset](root=self.data_dir, train=False, download=True, transform=self.test_transform)
-        self.train_sampler   = OnlineSampler(self.online_iter_dataset, self.n_tasks, self.m, self.n, self.rnd_seed, 0, self.rnd_NM, _w, _r)
-        self.test_sampler    = OnlineTestSampler(self.test_dataset, [], _w, _r)
-        self.train_dataloader    = DataLoader(self.online_iter_dataset, batch_size=self.temp_batchsize, sampler=self.train_sampler, num_workers=self.n_worker)
-        
-        self.mask = torch.zeros(self.n_classes, device=self.device) - torch.inf
-        self.seen = 0
-        self.memory = Memory()
+        os.makedirs(f"{self.log_path}/logs/{self.dataset_name}/{self.note}", exist_ok=True)
+        os.makedirs(f"{self.log_path}/tensorboard/{self.dataset_name}/{self.note}", exist_ok=True)
 
     def setup_distributed_model(self):
-
         print("Building model...")
-        self.model = select_model(self.model_name, self.dataset, self.n_classes,self.selection_size).to(self.device)
+        self.model = self.model(self.dataset, self.n_classes, self.selection_size).to(self.device)
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
         
         self.model.to(self.device)
@@ -214,17 +128,66 @@ class _Trainer():
         print(f"Learnable Parameters :\t{n_params}")
         print("")
 
-        # self.memory = DummyMemory(datasize=self.memory_size, shape=(3,224,224))
+    def setup_dataset(self):
+        # get dataset
+        self.train_dataset = self.dataset(root=self.data_dir, train=True, download=True, transform=self.train_transform)
+        self.test_dataset = self.dataset(root=self.data_dir, train=False, download=True, transform=self.test_transform)
+        self.n_classes = len(self.train_dataset.classes)
+
+        # prefetch dataset
+        self.train_images = []
+        self.train_labels = []
+        self.test_images = []
+        self.test_labels = []
+        for images, labels in self.train_dataset:
+            self.train_images.append(images)
+            self.train_labels.append(labels)
+        self.train_images = np.concatenate(self.train_images)
+        self.train_labels = np.array(self.train_labels)
+        for images, labels in self.test_dataset:
+            self.test_images.append(images)
+            self.test_labels.append(labels)
+        self.test_images = np.concatenate(self.test_images)
+        self.test_labels = np.array(self.test_labels)
+
+    def setup_transforms(self):
+        train_transform = []
+        self.cutmix = "cutmix" in self.transforms 
+        if "cutout" in self.transforms:
+            train_transform.append(Cutout(size=16))
+            if self.gpu_transform:
+                self.gpu_transform = False
+        if "randaug" in self.transforms:
+            train_transform.append
+            (RandAugment())
+            if self.gpu_transform:
+                self.gpu_transform = False
+        if "autoaug" in self.transforms:
+            if 'cifar' in self.dataset_name:
+                train_transform.append(transforms.AutoAugment(transforms.AutoAugmentPolicy('cifar10')))
+            elif 'imagenet' in self.dataset_name:
+                train_transform.append(transforms.AutoAugment(transforms.AutoAugmentPolicy('imagenet')))
+            elif 'svhn' in self.dataset_name:
+                train_transform.append(transforms.AutoAugment(transforms.AutoAugmentPolicy('svhn')))
+
+        self.train_transform = transforms.Compose([
+                transforms.Resize((self.inp_size, self.inp_size)),
+                transforms.RandomCrop(self.inp_size, padding=4),
+                transforms.RandomHorizontalFlip(),
+                *train_transform,
+                transforms.ToTensor(),
+                transforms.Normalize(self.mean, self.std),])
+        self.test_transform = transforms.Compose([
+                transforms.Resize((self.inp_size, self.inp_size)),
+                transforms.ToTensor(),
+                transforms.Normalize(self.mean, self.std),])
 
     def run(self):
-        if self.profile:
-            self.profile_worker(0)
+        # Distributed Launch
+        if self.ngpus_per_nodes > 1:
+            mp.spawn(self.main_worker, nprocs=self.ngpus_per_nodes, join=True)
         else:
-            # Distributed Launch
-            if self.ngpus_per_nodes > 1:
-                mp.spawn(self.main_worker, nprocs=self.ngpus_per_nodes, join=True)
-            else:
-                self.main_worker(0)
+            self.main_worker(0)
     
     def main_worker(self, gpu) -> None:
         self.gpu    = gpu % self.ngpus_per_nodes
@@ -263,33 +226,32 @@ class _Trainer():
                 'from checkpoints.')
         cudnn.benchmark = False
 
-        self.setup_distributed_dataset()
+        print(f"[1] Select a CIL method ({self.mode})")
+
+        self.model, self.inp_size = get_model(self.model_name)
+        self.dataset, self.mean, self.std = get_dataset(self.dataset_name)
+        self.setup_transforms()
+        self.setup_dataset()
+        self.setup_distributed_model()
+        self.memory = Memory()
         self.total_samples = len(self.train_dataset)
 
-        print(f"[1] Select a CIL method ({self.mode})")
-        self.setup_distributed_model()
+        self.train_sampler = OnlineSampler(self.trian_dataset, self.n_tasks, self.m, self.n, self.rnd_NM, self.rnd_seed, self.selection_size)
+        self.train_dataloader = DataLoader(self.trian_dataset, batch_size=self.batchsize, sampler=self.train_sampler, num_workers=self.n_worker, pin_memory=True)
+
+        self.test_dataloader = DataLoader(self.test_dataset, batch_size=self.batchsize, shuffle=False, num_workers=self.n_worker, pin_memory=True)
 
         print(f"[2] Incrementally training {self.n_tasks} tasks")
         task_records = defaultdict(list)
         eval_results = defaultdict(list)
         samples_cnt = 0
 
-        # macs, params = ptflops.get_model_complexity_info(self.model, (3, 224, 224), as_strings=True,
-        #                                     print_per_layer_stat=True, verbose=True, flops_units='flops')
-        # print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
-        # print('{:<30}  {:<8}'.format('Number of parameters: ', params))
-
-
         num_eval = self.eval_period
         
         for task_id in range(self.n_tasks):
             if self.mode == "joint" and task_id > 0:
                 return
-            
-            # if task_id ==0 and not self.debug:
-            #     print()
-            #     self.train_data_config(self.n_tasks,self.train_dataset,self.train_sampler)
-            
+
             print("\n" + "#" * 50)
             print(f"# Task {task_id} iteration")
             print("#" * 50 + "\n")
@@ -368,62 +330,6 @@ class _Trainer():
             #     print(f"Task {i}")
             #     print(cls_acc[i])
             print(f"="*24)
-        
-
-
-    def profile_worker(self, gpu) -> None:
-        self.memory = DummyMemory(datasize=self.memory_size, shape=(3,224,224))
-
-        self.gpu    = gpu % self.ngpus_per_nodes
-        self.device = torch.device(self.gpu)
-        if self.distributed:
-            self.local_rank = self.gpu
-            if 'SLURM_PROCID' in os.environ.keys():
-                self.rank = int(os.environ['SLURM_PROCID']) * self.ngpus_per_nodes + self.gpu
-                print(f"| Init Process group {os.environ['SLURM_PROCID']} : {self.local_rank}")
-            else :
-                self.rank = self.gpu
-                print(f"| Init Process group 0 : {self.local_rank}")
-            if 'MASTER_ADDR' not in os.environ.keys():
-                os.environ['MASTER_ADDR'] = '127.0.0.1'
-                os.environ['MASTER_PORT'] = '12701'
-            torch.cuda.set_device(self.gpu)
-            time.sleep(self.rank * 0.1) # prevent port collision
-            dist.init_process_group(backend=self.dist_backend, init_method=self.dist_url,
-                                    world_size=self.world_size, rank=self.rank)
-            torch.distributed.barrier()
-            self.setup_for_distributed(self.is_main_process())
-        else:
-            pass
-        
-        if self.rnd_seed is not None:
-            random.seed(self.rnd_seed)
-            np.random.seed(self.rnd_seed)
-            torch.manual_seed(self.rnd_seed)
-            torch.cuda.manual_seed(self.rnd_seed)
-            torch.cuda.manual_seed_all(self.rnd_seed) # if use multi-GPU
-            cudnn.deterministic = True
-        cudnn.benchmark = False
-
-        self.setup_distributed_dataset()
-        self.total_samples = len(self.train_dataset)
-
-        self.setup_distributed_model()
-
-        task_records = defaultdict(list)
-        eval_results = defaultdict(list)
-        samples_cnt = 0
-
-        num_eval = self.eval_period
-        
-        self.train_sampler.set_task(0)
-        self.online_before_task(0)          
-        for i, (images, labels, idx) in enumerate(self.train_dataloader):
-            samples_cnt += images.size(0) * self.world_size
-            loss, acc = self.online_step(images, labels, idx)
-            self.report_training(samples_cnt, loss, acc)
-            break
-        self.online_after_task(0)        
 
     def add_new_class(self, class_name):
         exposed_classes = []

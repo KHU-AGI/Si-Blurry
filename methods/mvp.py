@@ -19,24 +19,14 @@ import datetime
 import gc
 import torch
 import torch.nn as nn
-from torch.utils.tensorboard import SummaryWriter
-
 from methods._trainer import _Trainer
-
 from utils.train_utils import select_optimizer, select_scheduler
-
 from timm.models.registry import register_model
-from timm.models.vision_transformer import _cfg, default_cfgs
-from models.vit import _create_vision_transformer
+from timm.models.vision_transformer import _cfg, default_cfgs,_create_vision_transformer
 from utils.memory import MemoryBatchSampler
 from torch.utils.data import DataLoader
 
-from sklearn.manifold import TSNE
-import matplotlib.pyplot as plt
-
-
 logger = logging.getLogger()
-writer = SummaryWriter("tensorboard")
 
 T = TypeVar('T', bound = 'nn.Module')
 
@@ -56,9 +46,9 @@ def vit_base_patch16_224(pretrained=False, **kwargs):
     model = _create_vision_transformer('vit_base_patch16_224', pretrained=pretrained, **model_kwargs)
     return model
 
-class Ours(_Trainer):
+class MVP(_Trainer):
     def __init__(self, **kwargs):
-        super(Ours, self).__init__(**kwargs)
+        super(MVP, self).__init__(**kwargs)
         
         self.mask_viz = torch.empty(0)
         self.use_mask    = kwargs.get("use_mask")
@@ -172,7 +162,6 @@ class Ours(_Trainer):
 
                 total_loss += loss.mean().item()
                 label += y.tolist()
-
         avg_acc = total_correct / total_num_data
         avg_loss = total_loss / len(test_loader)
         cls_acc = (correct_l / (num_data_l + 1e-5)).numpy().tolist()
@@ -227,13 +216,11 @@ class Ours(_Trainer):
         return sample_grad, batch_grad
     
     def _get_ignore(self, sample_grad, batch_grad):
-        # ign_score = torch.max(1. - torch.cosine_similarity(sample_grad, batch_grad, dim=1), torch.zeros(1, device=self.device)) #B
         ign_score = (1. - torch.cosine_similarity(sample_grad, batch_grad, dim=1))#B
         return ign_score
 
     def _get_compensation(self, y, feat):
         head_w = self.model_without_ddp.backbone.fc.weight[y].clone().detach()
-        # cps_score = torch.max(1 - torch.cosine_similarity(head_w, sample_g, dim=1), torch.ones(1, device=self.device)) # B
         cps_score = (1. - torch.cosine_similarity(head_w, feat, dim=1) + self.margin)#B
         return cps_score
 
@@ -256,21 +243,8 @@ class Ours(_Trainer):
         logit = logit + self.mask
         log_p = F.log_softmax(logit, dim=1)
         loss = F.nll_loss(log_p, y)
-        # mask_loss = F.cross_entropy(logit, y)
-
-        # if self.use_afs:
-        #     logit = self.model_without_ddp.forward_head(feature / (cps_score.unsqueeze(1)))
-        # else:
-        #     logit = self.model_without_ddp.forward_head(feature)
-        # if self.use_mask:
-        #     logit = logit * mask
-        # logit = logit + self.mask
-        # log_p = F.log_softmax(logit, dim=1)
-        # loss = F.nll_loss(log_p, y, reduction='none')
-        # loss = F.cross_entropy(logit, y, reduction='none')
         if self.use_mcr:
             loss = (1-self.alpha)* loss + self.alpha * (ign_score ** self.gamma) * loss
-        # return loss.mean() + self.model_without_ddp.get_similarity_loss()
         return loss.mean() + self.model_without_ddp.get_similarity_loss()
     
     def report_training(self, sample_num, train_loss, train_acc):
@@ -289,83 +263,6 @@ class Ours(_Trainer):
         self.model_without_ddp.use_mask = self.use_mask
         self.model_without_ddp.use_contrastiv = self.use_contrastiv
         self.model_without_ddp.use_last_layer = self.use_last_layer
-
-
-    # def main_worker(self, gpu) -> None:
-    #     super(Ours, self).main_worker(gpu)
-
-    #     vis_sel = torch.randperm(self.model_without_ddp.features.shape[0])[:10000]
-    #     self.model_without_ddp.features = torch.cat([self.model_without_ddp.features[vis_sel], self.model_without_ddp.keys], dim=0)
-    #     self.model_without_ddp.features = F.normalize(self.model_without_ddp.features, dim=1)
-
-    #     tsne = TSNE(n_components=2, random_state=0)
-    #     X_2d = tsne.fit_transform(self.model_without_ddp.features.detach().cpu().numpy())
-
-    #     for t in range(5):
-    #         for m in range(10):
-    #             for i in range(100):
-    #                 if torch.sigmoid(self.mask_viz[t*10+m][i]) > 0.5:
-    #                     plt.scatter(X_2d[:10000][self.labels[vis_sel]==i, 0], X_2d[:10000][self.labels[vis_sel]==i, 1], s = 1, alpha=1)
-    #                 else:
-    #                     plt.scatter(X_2d[:10000][self.labels[vis_sel]==i, 0], X_2d[:10000][self.labels[vis_sel]==i, 1], s = 1, alpha=0.2)
-    #             plt.scatter(X_2d[-50:-40, 0], X_2d[-50:-40, 1], s = 50, marker='^', c='black')
-    #             for i in range(10):
-    #                 plt.text(X_2d[-50:-40, 0][i] + 0.1, X_2d[-50:-40, 1][i], "{}".format(i), fontsize=10)
-    #             plt.savefig(f'OURS_tsne{self.rnd_seed}_Task{t+1}_mask{m}.png')
-    #             plt.clf()
-                    
-        # torch.save(self.mask_viz, f"mask_viz_{self.rnd_seed}.pth")
-        # idx = torch.randperm(self.model_without_ddp.features.shape[0])
-
-        # print(self.labels.size())
-        # print(self.model_without_ddp.features.shape)
-        # labels = self.labels[idx[:10000]]
-
-        # self.model_without_ddp.features = torch.cat([self.model_without_ddp.features[idx[:10000]], self.model_without_ddp.keys], dim=0)
-        # self.model_without_ddp.features = F.normalize(self.model_without_ddp.features, dim=1)
-
-        # tsne = TSNE(n_components=2, random_state=0)
-        # X_2d = tsne.fit_transform(self.model_without_ddp.features.detach().cpu().numpy())
-        
-        # for i in range(100):
-        #     plt.scatter(X_2d[:10000][labels==i, 0], X_2d[:10000][labels==i, 1], s = 1, alpha=0.2)
-        # plt.scatter(X_2d[-50:-40, 0], X_2d[-50:-40, 1], s = 50, marker='^', c='black')
-        # for i in range(10):
-        #     plt.text(X_2d[-50:-40, 0][i] + 0.1, X_2d[-50:-40, 1][i], "{}".format(i), fontsize=10)
-        # plt.savefig(f'OURS_tsne{self.rnd_seed}_Task1.png')
-        # plt.clf()
-
-        # for i in range(100):
-        #     plt.scatter(X_2d[:10000][labels==i, 0], X_2d[:10000][labels==i, 1], s = 1, alpha=0.2)
-        # plt.scatter(X_2d[-40:-30, 0], X_2d[-40:-30, 1], s = 50, marker='^', c='black')
-        # for i in range(10):
-        #     plt.text(X_2d[-50:-40, 0][i] + 0.1, X_2d[-50:-40, 1][i], "{}".format(i), fontsize=10)
-        # plt.savefig(f'OURS_tsne{self.rnd_seed}_Task2.png')
-        # plt.clf()
-
-        # for i in range(100):
-        #     plt.scatter(X_2d[:10000][labels==i, 0], X_2d[:10000][labels==i, 1], s = 1, alpha=0.2)
-        # plt.scatter(X_2d[-30:-20, 0], X_2d[-30:-20:, 1], s = 50, marker='^', c='black')
-        # for i in range(10):
-        #     plt.text(X_2d[-50:-40, 0][i] + 0.1, X_2d[-50:-40, 1][i], "{}".format(i), fontsize=10)
-        # plt.savefig(f'OURS_tsne{self.rnd_seed}_Task3.png')
-        # plt.clf()
-
-        # for i in range(100):
-        #     plt.scatter(X_2d[:10000][labels==i, 0], X_2d[:10000][labels==i, 1], s = 1, alpha=0.2)
-        # plt.scatter(X_2d[-20:-10, 0], X_2d[-20:-10, 1], s = 50, marker='^', c='black')
-        # for i in range(10):
-        #     plt.text(X_2d[-50:-40, 0][i] + 0.1, X_2d[-50:-40, 1][i], "{}".format(i), fontsize=10)
-        # plt.savefig(f'OURS_tsne{self.rnd_seed}_Task4.png')
-        # plt.clf()
-
-        # for i in range(100):
-        #     plt.scatter(X_2d[:10000][labels==i, 0], X_2d[:10000][labels==i, 1], s = 1, alpha=0.2)
-        # plt.scatter(X_2d[-10:, 0], X_2d[-10:, 1], s = 50, marker='^', c='black')
-        # for i in range(10):
-        #     plt.text(X_2d[-50:-40, 0][i] + 0.1, X_2d[-50:-40, 1][i], "{}".format(i), fontsize=10)
-        # plt.savefig(f'OURS_tsne{self.rnd_seed}_Task5.png')
-        # plt.clf()
        
     def update_memory(self, sample, label):
         # Update memory

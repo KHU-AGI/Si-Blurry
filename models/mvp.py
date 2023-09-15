@@ -4,16 +4,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import logging
-from torch.utils.tensorboard import SummaryWriter
-
 import timm
 from timm.models.registry import register_model
-from timm.models.vision_transformer import _cfg, default_cfgs
-
-from models.vit import _create_vision_transformer
+from timm.models.vision_transformer import _cfg, default_cfgs,_create_vision_transformer
 
 logger = logging.getLogger()
-writer = SummaryWriter("tensorboard")
 
 T = TypeVar('T', bound = 'nn.Module')
 
@@ -33,7 +28,7 @@ def vit_base_patch16_224_l2p(pretrained=False, **kwargs):
     model = _create_vision_transformer('vit_base_patch16_224_l2p', pretrained=pretrained, **model_kwargs)
     return model
 
-class Ours(nn.Module):
+class MVP(nn.Module):
     def __init__(self,
                  pos_g_prompt   : Iterable[int] = (0,1),
                  len_g_prompt   : int   = 5,

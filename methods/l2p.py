@@ -1,65 +1,20 @@
-from typing import TypeVar
-
-import timm
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import logging
-import copy
-
-import numpy as np
-import pandas as pd
-import torch
-import torch.nn as nn
-from torch import optim
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
-from utils.augment import Cutout, Invert, Solarize, select_autoaugment
-from torchvision import transforms
-from randaugment.randaugment import RandAugment
-
-from methods.er_baseline import ER
-from utils.data_loader import cutmix_data, ImageDataset
-from utils.augment import Cutout, Invert, Solarize, select_autoaugment
-
-import logging
-import copy
-import time
-import datetime
 
 import gc
-import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
+from typing import TypeVar
+import logging
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
-from torch import optim
-
-from methods._trainer import _Trainer
-
-from utils.data_loader import ImageDataset, StreamDataset, MemoryDataset, cutmix_data, get_statistics
-from utils.train_utils import select_model, select_optimizer, select_scheduler
-
-from utils.memory import MemoryBatchSampler, MemoryOrderedSampler
-
-import timm
-from timm.models import create_model
+from methods.er_baseline import ER
 from timm.models.registry import register_model
 from timm.models.vision_transformer import _cfg, default_cfgs
-from models.vit import _create_vision_transformer
-
+from models.vision_trainsfomer import _create_vision_transformer
+from utils.train_utils import select_optimizer, select_scheduler
+from utils.memory import MemoryBatchSampler
 from utils.memory import MemoryBatchSampler
 from torch.utils.data import DataLoader
-import timm
-from timm.models import create_model
-from timm.models.registry import register_model
-from timm.models.vision_transformer import _cfg, default_cfgs
-from models.vit import _create_vision_transformer
-from sklearn.manifold import TSNE
-import matplotlib.pyplot as plt
+
 logger = logging.getLogger()
-writer = SummaryWriter("tensorboard")
 
 T = TypeVar('T', bound = 'nn.Module')
 
@@ -89,9 +44,6 @@ class L2P(ER):
             self.lr_gamma = 0.9999
         self.labels = torch.empty(0)
         
-        # self.class_mask = None
-        # self.class_mask_dict={}
-    
     def online_step(self, images, labels, idx):
         self.add_new_class(labels)
         # train with augmented batches
@@ -199,69 +151,13 @@ class L2P(ER):
         else:
             self.scheduler.step()
             
-    def online_before_task(self,train_loader):
-        # Task-Free
+    def online_before_task(self, train_loader):
         pass
 
     def online_after_task(self, cur_iter):
-        # self.class_mask_dict[cur_iter]=self.class_mask
         self.model_without_ddp.keys = torch.cat([self.model_without_ddp.keys, self.model_without_ddp.prompt.key.clone().detach().cpu()], dim=0)
         pass
 
     def reset_opt(self):
         self.optimizer = select_optimizer(self.opt_name, self.lr, self.model, True)
         self.scheduler = select_scheduler(self.sched_name, self.optimizer, self.lr_gamma)
-
-    # def main_worker(self, gpu) -> None:
-    #     super(L2P, self).main_worker(gpu)
-        
-    #     idx = torch.randperm(self.model_without_ddp.features.shape[0])
-    #     print(self.labels.size())
-    #     print(self.model_without_ddp.features.shape)
-    #     labels = self.labels[idx[:10000]]
-
-    #     self.model_without_ddp.features = torch.cat([self.model_without_ddp.features[idx[:10000]], self.model_without_ddp.keys], dim=0)
-    #     self.model_without_ddp.features = F.normalize(self.model_without_ddp.features, dim=1)
-
-    #     tsne = TSNE(n_components=2, random_state=0)
-    #     X_2d = tsne.fit_transform(self.model_without_ddp.features.detach().cpu().numpy())
-        
-    #     for i in range(100):
-    #         plt.scatter(X_2d[:10000][labels==i, 0], X_2d[:10000][labels==i, 1], s = 1, alpha=0.2)
-    #     plt.scatter(X_2d[-50:-40, 0], X_2d[-50:-40, 1], s = 50, marker='^', c='black')
-    #     for i in range(10):
-    #         plt.text(X_2d[-50:-40, 0][i] + 0.1, X_2d[-50:-40, 1][i], "{}".format(i), fontsize=10)
-    #     plt.savefig(f'L2P_tsne{self.rnd_seed}_Task1.png')
-    #     plt.clf()
-
-    #     for i in range(100):
-    #         plt.scatter(X_2d[:10000][labels==i, 0], X_2d[:10000][labels==i, 1], s = 1, alpha=0.2)
-    #     plt.scatter(X_2d[-40:-30, 0], X_2d[-40:-30, 1], s = 50, marker='^', c='black')
-    #     for i in range(10):
-    #         plt.text(X_2d[-50:-40, 0][i] + 0.1, X_2d[-50:-40, 1][i], "{}".format(i), fontsize=10)
-    #     plt.savefig(f'L2P_tsne{self.rnd_seed}_Task2.png')
-    #     plt.clf()
-
-    #     for i in range(100):
-    #         plt.scatter(X_2d[:10000][labels==i, 0], X_2d[:10000][labels==i, 1], s = 1, alpha=0.2)
-    #     plt.scatter(X_2d[-30:-20, 0], X_2d[-30:-20:, 1], s = 50, marker='^', c='black')
-    #     for i in range(10):
-    #         plt.text(X_2d[-50:-40, 0][i] + 0.1, X_2d[-50:-40, 1][i], "{}".format(i), fontsize=10)
-    #     plt.savefig(f'L2P_tsne{self.rnd_seed}_Task3.png')
-    #     plt.clf()
-
-    #     for i in range(100):
-    #         plt.scatter(X_2d[:10000][labels==i, 0], X_2d[:10000][labels==i, 1], s = 1, alpha=0.2)
-    #     plt.scatter(X_2d[-20:-10, 0], X_2d[-20:-10, 1], s = 50, marker='^', c='black')
-    #     for i in range(10):
-    #         plt.text(X_2d[-50:-40, 0][i] + 0.1, X_2d[-50:-40, 1][i], "{}".format(i), fontsize=10)
-    #     plt.savefig(f'L2P_tsne{self.rnd_seed}_Task4.png')
-    #     plt.clf()
-
-    #     for i in range(100):
-    #         plt.scatter(X_2d[:10000][labels==i, 0], X_2d[:10000][labels==i, 1], s = 1, alpha=0.2)
-    #     plt.scatter(X_2d[-10:, 0], X_2d[-10:, 1], s = 50, marker='^', c='black')
-    #     for i in range(10):
-    #         plt.text(X_2d[-50:-40, 0][i] + 0.1, X_2d[-50:-40, 1][i], "{}".format(i), fontsize=10)
-    #     plt.savefig(f'L2P_tsne{self.rnd_seed}_Task5.png')
-    #     plt.clf()

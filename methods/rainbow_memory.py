@@ -11,19 +11,17 @@ from torchvision import transforms
 from randaugment.randaugment import RandAugment
 
 from methods.er_baseline import ER
-from utils.data_loader import ImageDataset
+from utils.datasets import ImageDataset
 from utils.augment import Cutout, Invert, Solarize, select_autoaugment
 from utils.memory import MemoryBatchSampler, MemoryOrderedSampler
 logger = logging.getLogger()
 writer = SummaryWriter("tensorboard")
-
 
 def cycle(iterable):
     # iterate with shuffling
     while True:
         for i in iterable:
             yield i
-
 
 class RM(ER):
     def __init__(self, *args, **kwargs) -> None:

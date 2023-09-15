@@ -1,32 +1,15 @@
 # When we make a new one, we should inherit the Finetune class.
-import logging
-import copy
-import time
-import datetime
-
-import numpy as np
-import pandas as pd
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-import torchvision.transforms as transforms
-from torch.utils.tensorboard import SummaryWriter
-from torch import optim
-
-from utils.data_loader import ImageDataset, StreamDataset, MemoryDataset, cutmix_data, get_statistics
-from utils.train_utils import select_model, select_optimizer, select_scheduler
-
-from utils.memory import MemoryBatchSampler, MemoryOrderedSampler
-from methods.er_baseline import ER
-
-import torchvision.transforms as transforms
-from methods._trainer import _Trainer
-from utils.memory import Memory
 import gc
+import copy
+import torch
+import logging
+import numpy as np
+import torchvision.transforms as transforms
+from utils.train_utils import select_scheduler
+from methods.er_baseline import ER
+from utils.memory import Memory
 
 logger = logging.getLogger()
-writer = SummaryWriter("tensorboard")
-
 
 def cycle(iterable):
     # iterate with shuffling
@@ -51,17 +34,12 @@ class LwF(ER):
         self.memory = Memory(data_source=self.loss_update_dataset)
     
     def online_step(self, images, labels, idx):
-        # image, label = sample
         self.add_new_class(labels)
-        # self.memory_sampler  = MemoryBatchSampler(self.memory, self.memory_batchsize, self.temp_batchsize * self.online_iter * self.world_size)
-        # self.memory_dataloader   = DataLoader(self.train_dataset, batch_size=self.memory_batchsize, sampler=self.memory_sampler, num_workers=0)
-        # self.memory_provider     = iter(self.memory_dataloader)
         # train with augmented batches
         _loss, _acc, _iter = 0.0, 0.0, 0
         for j in range(len(labels)):
             labels[j] = self.exposed_classes.index(labels[j].item())
         for _ in range(int(self.online_iter)):
-        # for _ in range(int(self.online_iter) * self.temp_batchsize * self.world_size):
             loss, acc = self.online_train([images.clone(), labels.clone()])
             _loss += loss
             _acc += acc
@@ -86,8 +64,6 @@ class LwF(ER):
             for cls in exposed_classes:
                 if cls not in self.exposed_classes:
                     self.exposed_classes.append(cls)
-        # self.memory.add_new_class(cls_list=self.exposed_classes)
-        # self.memory.add_new_class(cls_list=self.exposed_classes)
         self.mask[:len(self.exposed_classes)] = 0
         if 'reset' in self.sched_name:
             self.update_schedule(reset=True)
@@ -111,17 +87,6 @@ class LwF(ER):
                         idx.append(j)
                     else:
                         idx.append(self.memory_size)
-        # Distribute idx to all processes
-        # if self.distributed:
-        #     idx = torch.tensor(idx).to(self.device)
-        #     size = torch.tensor([idx.size(0)]).to(self.device)
-        #     dist.broadcast(size, 0)
-        #     if dist.get_rank() != 0:
-        #         idx = torch.zeros(size.item(), dtype=torch.long).to(self.device)
-        #     dist.barrier() # wait for all processes to reach this point
-        #     dist.broadcast(idx, 0)
-        #     idx = idx.cpu().tolist()
-        # idx = torch.cat(self.all_gather(torch.tensor(idx).to(self.device))).cpu().tolist()
         for i, index in enumerate(idx):
             if len(self.memory) >= self.memory_size:
                 if index < self.memory_size:
@@ -130,8 +95,6 @@ class LwF(ER):
                 self.memory.replace_data([sample[i], self.exposed_classes[label[i].item()]])
     
     def online_before_task(self, task_id):
-        # for n, p in self.model.named_parameters():
-        #     p.requires_grad = True
         pass
     
     def freeze(self,model):
@@ -142,9 +105,6 @@ class LwF(ER):
         return model
     
     def online_after_task(self,task_id):
-        #* Task-Free를 위해서 매 Batch마다 Old model update!
-        # self.old_model = self.freeze(copy.deepcopy(self.model))
-        # self.old_mask = copy.deepcopy(self.mask)
         pass
         
     def _KD_loss(self,pred, soft, T):
@@ -156,13 +116,6 @@ class LwF(ER):
         self.model.train()
         total_loss, total_correct, total_num_data = 0.0, 0.0, 0.0
         x, y = data
-        
-        # if len(self.memory) > 0 and self.memory_batchsize > 0:
-        #     memory_images, memory_labels = next(self.memory_provider)
-        #     for i in range(len(memory_labels)):
-        #         memory_labels[i] = self.exposed_classes.index(memory_labels[i].item())
-        #     x = torch.cat([x, memory_images], dim=0)
-        #     y = torch.cat([y, memory_labels], dim=0)
 
         x = x.to(self.device)
         y = y.to(self.device)
@@ -171,10 +124,6 @@ class LwF(ER):
 
         self.optimizer.zero_grad()
         logit, loss = self.model_forward(x,y)
-        # if self.task_id==0:
-        #     logit, loss = self.model_forward(x,y)
-        # else:
-        #     logit, loss = self.lwf_forward(x,y)
             
         _, preds = logit.topk(self.topk, 1, True, True)
         
@@ -188,22 +137,6 @@ class LwF(ER):
         total_num_data += y.size(0)
 
         return total_loss, total_correct/total_num_data
-
-    #* Ori code
-    # def model_forward(self, x, y):
-    #     do_cutmix = self.cutmix and np.random.rand(1) < 0.5
-    #     if do_cutmix:
-    #         x, labels_a, labels_b, lam = cutmix_data(x=x, y=y, alpha=1.0)
-    #         with torch.cuda.amp.autocast(enabled=self.use_amp):
-    #             logit = self.model(x)
-    #             logit += self.mask
-    #             loss = lam * self.criterion(logit, labels_a) + (1 - lam) * self.criterion(logit, labels_b)
-    #     else:
-    #         with torch.cuda.amp.autocast(enabled=self.use_amp):
-    #             logit = self.model(x)
-    #             logit += self.mask
-    #             loss = self.criterion(logit, y)
-    #     return logit, loss
     
     def model_forward(self, x, y):
         kd_loss =0.
@@ -214,8 +147,6 @@ class LwF(ER):
             loss = self.criterion(logit, y)
             if self.old_model is not None:
                 old_logit = self.old_model(x)
-                # old_logit = old_logit + self.old_mask
-                # new_logit = ori_logit + self.old_mask
                 kd_loss = self._KD_loss(ori_logit[:,:len(self.old_mask)],
                                         old_logit[:,:len(self.old_mask)],T=2.)
                 loss += self.kd_hp * kd_loss

@@ -2,28 +2,13 @@
 # This code is referred by
 # https://github.com/GT-RIPL/Continual-Learning-Benchmark
 ################################
-import os
-import logging
-import random
-
-import numpy as np
 import torch
-import torch.nn as nn
-import pandas as pd
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
-
+import logging
 from methods.er_baseline import ER
-from utils.data_loader import cutmix_data, ImageDataset, StreamDataset
-from utils.train_utils import cycle
 
-from utils.memory import MemoryBatchSampler
 logger = logging.getLogger()
-writer = SummaryWriter("tensorboard")
-
 
 class EWCpp(ER):
-
     def __init__(
         self, **kwargs
     ):

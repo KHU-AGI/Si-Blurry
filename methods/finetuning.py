@@ -1,21 +1,10 @@
 # When we make a new one, we should inherit the Finetune class.
-import logging
-
-import numpy as np
-import torch
-from torch.utils.tensorboard import SummaryWriter
-
-from utils.data_loader import cutmix_data
-from utils.train_utils import select_scheduler
 import gc
-
-import torchvision.transforms as transforms
+import torch
+import numpy as np
+from utils.augment import cutmix_data
+from utils.train_utils import select_scheduler
 from methods._trainer import _Trainer
-
-
-logger = logging.getLogger()
-writer = SummaryWriter("tensorboard")
-
 
 def cycle(iterable):
     # iterate with shuffling

@@ -7,9 +7,7 @@ import logging
 from torch.utils.tensorboard import SummaryWriter
 import timm
 from timm.models.registry import register_model
-from timm.models.vision_transformer import _cfg, default_cfgs
-
-from models.vit import _create_vision_transformer
+from timm.models.vision_transformer import _cfg, default_cfgs,_create_vision_transformer
 
 logger = logging.getLogger()
 writer = SummaryWriter("tensorboard")
@@ -101,7 +99,7 @@ class DualPrompt(nn.Module):
                  len_e_prompt   : int   = 20,
                  prompt_func    : str   = 'prompt_tuning',
                  task_num       : int   = 10,
-                 class_num      : int   = 100,
+                 num_classes    : int   = 100,
                  lambd          : float = 1.0,
                  backbone_name  : str   = None,
                  **kwargs):
@@ -116,12 +114,12 @@ class DualPrompt(nn.Module):
         self.register_buffer('pos_g_prompt', torch.tensor(pos_g_prompt, dtype=torch.int64))
         self.register_buffer('pos_e_prompt', torch.tensor(pos_e_prompt, dtype=torch.int64))
         self.register_buffer('similarity', torch.zeros(1))
-        self.register_buffer('mask', torch.zeros(class_num))
+        self.register_buffer('mask', torch.zeros(num_classes))
         
         self.lambd      = lambd
-        self.class_num  = class_num
+        self.class_num  = num_classes
 
-        self.add_module('backbone', timm.create_model(backbone_name, pretrained=True, num_classes=class_num))
+        self.add_module('backbone', timm.create_model(backbone_name, pretrained=True, num_classes=num_classes))
         for name, param in self.backbone.named_parameters():
             param.requires_grad = False
         self.backbone.fc.weight.requires_grad = True
@@ -235,8 +233,6 @@ class DualPrompt(nn.Module):
             x = self.backbone.pos_drop(token_appended + self.backbone.pos_embed)
             query = self.backbone.blocks(x)
             query = self.backbone.norm(query)[:, 0]
-        # if self.training:
-        #     self.features = torch.cat((self.features, query.detach().cpu()), dim = 0)
 
         if self.g_prompt is not None:
             g_p = self.g_prompt.prompts[0].expand(B, -1, -1)
@@ -269,15 +265,10 @@ class DualPrompt(nn.Module):
             if self.training:
                 if self.task_id != 0:
                     with torch.no_grad():
-                        # self.e_prompt.prompts[self.task_id] = self.e_prompt.prompts[self.task_id - 1].detach().clone()
-                        # self.e_prompt.key[self.task_id] = self.e_prompt.key[self.task_id - 1].detach().clone()
                         self.e_prompt.prompts[self.task_id] = self.e_prompt.prompts[self.task_id - 1].clone()
                         self.e_prompt.key[self.task_id] = self.e_prompt.key[self.task_id - 1].clone()
         else :
             self.task_id = flag
-
-        # self.mask += -torch.inf
-        # self.mask[task] = 0
         return
         
     def get_count(self):

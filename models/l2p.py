@@ -5,12 +5,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import logging
 from torch.utils.tensorboard import SummaryWriter
-
 import timm
 from timm.models.registry import register_model
-from timm.models.vision_transformer import _cfg, default_cfgs
-
-from models.vit import _create_vision_transformer
+from timm.models.vision_transformer import _cfg, default_cfgs,_create_vision_transformer
 
 logger = logging.getLogger()
 writer = SummaryWriter("tensorboard")
@@ -99,7 +96,7 @@ class L2P(nn.Module):
                  pool_size      : int   = 10,
                  selection_size : int   = 5,
                  prompt_len     : int   = 5,
-                 class_num      : int   = 100,
+                 num_classes    : int   = 100,
                  backbone_name  : str   = None,
                  lambd          : float = 0.5,
                  _batchwise_selection  : bool = False,
@@ -120,21 +117,15 @@ class L2P(nn.Module):
         self.selection_size = selection_size
         self.lambd          = lambd
         self._batchwise_selection = _batchwise_selection
-        self.class_num            = class_num
+        self.class_num            = num_classes
 
-        # model_kwargs = dict(
-        # patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
-        
-        # self.add_module('backbone', timm.models.create_model(backbone_name, pretrained=True, num_classes=class_num))
-        self.add_module('backbone', timm.models.create_model(backbone_name, pretrained=True, num_classes=class_num,
+        self.add_module('backbone', timm.models.create_model(backbone_name, pretrained=True, num_classes=num_classes,
                                                              drop_rate=0.,drop_path_rate=0.,drop_block_rate=None))
         for name, param in self.backbone.named_parameters():
                 param.requires_grad = False
         self.backbone.fc.weight.requires_grad = True
         self.backbone.fc.bias.requires_grad   = True
 
-        # self.fc = self.backbone.fc
-        
         self.prompt = Prompt(
             pool_size,
             selection_size,
@@ -165,7 +156,6 @@ class L2P(nn.Module):
         x = self.backbone.pos_drop(token_appended + self.backbone.pos_embed)
         x = torch.cat((x[:,0].unsqueeze(1), prompts, x[:,1:]), dim=1)
         
-        
         x = self.backbone.blocks(x)
         x = self.backbone.norm(x)
         x = x[:, 1:self.selection_size * self.prompt_len + 1].clone()
@@ -185,14 +175,3 @@ class L2P(nn.Module):
 
     def get_count(self):
         return self.prompt.update()
-
-    # def train(self: T, mode : bool = True, **kwargs):
-    #     ten = super().train()
-    #     self.backbone.eval()
-    #     return ten
-    
-    # def eval(self: T, mode : bool = True, **kwargs):
-    #     ten = super().eval()
-    #     self.backbone.eval()
-    #     return ten
-    

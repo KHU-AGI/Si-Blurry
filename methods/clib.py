@@ -8,7 +8,6 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
-from torch.utils.tensorboard import SummaryWriter
 from scipy.stats import ttest_ind
 
 import gc
@@ -16,10 +15,9 @@ from methods.er_baseline import ER
 from utils.memory import MemoryBatchSampler, MemoryOrderedSampler
 from utils.memory import Memory
 from datasets import *
-from utils.onlinesampler import OnlineSampler, OnlineTestSampler
+from utils.online_sampler import OnlineSampler, OnlineTestSampler
 
 logger = logging.getLogger()
-writer = SummaryWriter("tensorboard")
 
 class CLIB(ER):
     def __init__(self, *args, **kwargs):
@@ -46,13 +44,6 @@ class CLIB(ER):
 
     def setup_distributed_dataset(self):
         super(CLIB, self).setup_distributed_dataset()
-        # _r = dist.get_rank() if self.distributed else None       # means that it is not distributed
-        # _w = dist.get_world_size() if self.distributed else None # means that it is not distributed
-        # self.train_dataset   = self.datasets[self.dataset](root=self.data_dir, train=True,  download=True, 
-        #                                               transform=self.train_transform)
-        # self.online_iter_dataset = OnlineIterDataset(self.train_dataset, 1)
-        # self.train_sampler   = OnlineSampler(self.online_iter_dataset, self.n_tasks, self.m, self.n, self.rnd_seed, 0, self.rnd_NM, _w, _r)
-        # self.train_dataloader    = DataLoader(self.online_iter_dataset, batch_size=self.temp_batchsize, sampler=self.train_sampler, num_workers=self.n_worker, pin_memory=True)
         self.loss_update_dataset = self.datasets[self.dataset](root=self.data_dir, train=True, download=True,
                                      transform=transforms.Compose([transforms.Resize((self.inp_size,self.inp_size)),
                                                                    transforms.ToTensor()]))
