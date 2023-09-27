@@ -41,5 +41,3 @@ If you find this code useful for your research, please cite our paper:
   year={2023}
 }
 ```
-# Si-Blurry
-Official repository for Online Class Incremental Learning on Stochastic Blurry Task Boundary via Mask and Visual Prompt Tuning on ICCV 2023
