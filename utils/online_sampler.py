@@ -4,7 +4,7 @@ from torch.utils.data.sampler import Sampler
 from typing import Optional, Sized, Iterable, Tuple
 
 class OnlineSampler(Sampler):
-    def __init__(self, data_source: Optional[Sized], num_tasks: int, m: int, n: int, rnd_seed: int, cur_iter: int= 0, varing_NM: bool= False, num_replicas: int=None, rank: int=None) -> None:
+    def __init__(self, data_source: Optional[Sized], num_tasks: int, m: int, n: int,  rnd_seed: int, cur_iter: int= 0, varing_NM: bool= False, num_replicas: int=None, rank: int=None) -> None:
 
         self.data_source    = data_source
         self.classes    = self.data_source.classes

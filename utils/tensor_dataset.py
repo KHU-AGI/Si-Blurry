@@ -15,7 +15,7 @@ class TensorDataset(Dataset):
         y = self.label[index]
         if self.transform:
             x = self.transform(x)
-        return x, y
+        return x, y, index
     
     def __len__(self):
         return self.length

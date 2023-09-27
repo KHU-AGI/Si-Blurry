@@ -1,8 +1,8 @@
 #!/bin/bash
 
-NOTE="ER_CIFAR_2000" # Short description of the experiment. (WARNING: logs/results with the same note will be overwritten!)
+NOTE="CLIB_CIFAR_2000" # Short description of the experiment. (WARNING: logs/results with the same note will be overwritten!)
 
-MODE="er"
+MODE="clib"
 DATASET="cifar100" # cifar10, cifar100, tinyimagenet, imagenet
 N_TASKS=5
 N=50

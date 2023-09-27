@@ -4,13 +4,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import logging
-from torch.utils.tensorboard import SummaryWriter
 import timm
 from timm.models.registry import register_model
 from timm.models.vision_transformer import _cfg, default_cfgs,_create_vision_transformer
 
 logger = logging.getLogger()
-writer = SummaryWriter("tensorboard")
 
 T = TypeVar('T', bound = 'nn.Module')
 
@@ -101,7 +99,7 @@ class DualPrompt(nn.Module):
                  task_num       : int   = 10,
                  num_classes    : int   = 100,
                  lambd          : float = 1.0,
-                 backbone_name  : str   = None,
+                 backbone_name  : str   = 'vit_base_patch16_224_l2p',
                  **kwargs):
         super().__init__()
 
@@ -122,8 +120,8 @@ class DualPrompt(nn.Module):
         self.add_module('backbone', timm.create_model(backbone_name, pretrained=True, num_classes=num_classes))
         for name, param in self.backbone.named_parameters():
             param.requires_grad = False
-        self.backbone.fc.weight.requires_grad = True
-        self.backbone.fc.bias.requires_grad   = True
+        self.backbone.head.weight.requires_grad = True
+        self.backbone.head.bias.requires_grad   = True
 
         self.tasks = []
 
@@ -246,7 +244,7 @@ class DualPrompt(nn.Module):
 
         x = self.prompt_func(self.backbone.pos_drop(token_appended + self.backbone.pos_embed), g_p, e_p)
         x = self.backbone.norm(x)
-        x = self.backbone.fc(x[:, 0])
+        x = self.backbone.head(x[:, 0])
 
         self.similarity = e_s.mean()
         return x

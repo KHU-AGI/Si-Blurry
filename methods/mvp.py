@@ -1,61 +1,33 @@
-from typing import TypeVar
-
+import copy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
+from typing import TypeVar
 import logging
-import copy
-
-import torch
-import torch.nn as nn
-from torch.utils.tensorboard import SummaryWriter
 
 import logging
-import copy
 import time
 import datetime
-
 import gc
-import torch
-import torch.nn as nn
+
 from methods._trainer import _Trainer
 from utils.train_utils import select_optimizer, select_scheduler
-from timm.models.registry import register_model
-from timm.models.vision_transformer import _cfg, default_cfgs,_create_vision_transformer
 from utils.memory import MemoryBatchSampler
 from torch.utils.data import DataLoader
 
 logger = logging.getLogger()
-
 T = TypeVar('T', bound = 'nn.Module')
-
-default_cfgs['vit_base_patch16_224'] = _cfg(
-        url='https://storage.googleapis.com/vit_models/imagenet21k/ViT-B_16.npz',
-        num_classes=21843)
-
-# Register the backbone model to timm
-@register_model
-def vit_base_patch16_224(pretrained=False, **kwargs):
-    """ ViT-Base model (ViT-B/32) from original paper (https://arxiv.org/abs/2010.11929).
-    ImageNet-21k weights @ 224x224, source https://github.com/google-research/vision_transformer.
-    NOTE: this model has valid 21k classifier head and no representation (pre-logits) layer
-    """
-    model_kwargs = dict(
-        patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
-    model = _create_vision_transformer('vit_base_patch16_224', pretrained=pretrained, **model_kwargs)
-    return model
 
 class MVP(_Trainer):
     def __init__(self, **kwargs):
         super(MVP, self).__init__(**kwargs)
         
-        self.mask_viz = torch.empty(0)
         self.use_mask    = kwargs.get("use_mask")
         self.use_contrastiv  = kwargs.get("use_contrastiv")
         self.use_last_layer  = kwargs.get("use_last_layer")
         self.use_afs  = kwargs.get("use_afs")
-        self.use_mcr  = kwargs.get("use_mcr")
+        self.use_gsf  = kwargs.get("use_gsf")
         
         self.alpha  = kwargs.get("alpha")
         self.gamma  = kwargs.get("gamma")
@@ -65,10 +37,7 @@ class MVP(_Trainer):
     
     def online_step(self, images, labels, idx):
         self.add_new_class(labels)
-        # train with augmented batches
         _loss, _acc, _iter = 0.0, 0.0, 0
-        # for j in range(len(labels)):
-        #     labels[j] = self.exposed_classes.index(labels[j].item())
 
         self.memory_sampler  = MemoryBatchSampler(self.memory, self.memory_batchsize, self.temp_batchsize * self.online_iter * self.world_size)
         self.memory_dataloader   = DataLoader(self.train_dataset, batch_size=self.memory_batchsize, sampler=self.memory_sampler, num_workers=4)
@@ -89,7 +58,6 @@ class MVP(_Trainer):
         total_loss, total_correct, total_num_data = 0.0, 0.0, 0.0
 
         x, y = data
-
         self.labels = torch.cat((self.labels, y), 0)
         
         if len(self.memory) > 0 and self.memory_batchsize > 0:
@@ -162,6 +130,7 @@ class MVP(_Trainer):
 
                 total_loss += loss.mean().item()
                 label += y.tolist()
+
         avg_acc = total_correct / total_num_data
         avg_loss = total_loss / len(test_loader)
         cls_acc = (correct_l / (num_data_l + 1e-5)).numpy().tolist()
@@ -181,8 +150,6 @@ class MVP(_Trainer):
         pass
 
     def online_after_task(self, cur_iter):
-        self.model_without_ddp.keys = torch.cat([self.model_without_ddp.keys, self.model_without_ddp.key.detach().cpu()], dim=0)
-        self.mask_viz = torch.cat([self.mask_viz, self.model_without_ddp.mask.detach().cpu()], dim=0)
         pass
 
     def reset_opt(self):
@@ -190,7 +157,7 @@ class MVP(_Trainer):
         self.scheduler = select_scheduler(self.sched_name, self.optimizer, self.lr_gamma)
 
     def _compute_grads(self, feature, y, mask):
-        head = copy.deepcopy(self.model_without_ddp.backbone.fc)
+        head = copy.deepcopy(self.model_without_ddp.backbone.head)
         head.zero_grad()
         logit = head(feature.detach())
         if self.use_mask:
@@ -220,7 +187,7 @@ class MVP(_Trainer):
         return ign_score
 
     def _get_compensation(self, y, feat):
-        head_w = self.model_without_ddp.backbone.fc.weight[y].clone().detach()
+        head_w = self.model_without_ddp.backbone.head.weight[y].clone().detach()
         cps_score = (1. - torch.cosine_similarity(head_w, feat, dim=1) + self.margin)#B
         return cps_score
 
@@ -243,7 +210,7 @@ class MVP(_Trainer):
         logit = logit + self.mask
         log_p = F.log_softmax(logit, dim=1)
         loss = F.nll_loss(log_p, y)
-        if self.use_mcr:
+        if self.use_gsf:
             loss = (1-self.alpha)* loss + self.alpha * (ign_score ** self.gamma) * loss
         return loss.mean() + self.model_without_ddp.get_similarity_loss()
     
@@ -263,7 +230,7 @@ class MVP(_Trainer):
         self.model_without_ddp.use_mask = self.use_mask
         self.model_without_ddp.use_contrastiv = self.use_contrastiv
         self.model_without_ddp.use_last_layer = self.use_last_layer
-       
+
     def update_memory(self, sample, label):
         # Update memory
         if self.distributed:

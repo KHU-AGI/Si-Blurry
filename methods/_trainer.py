@@ -17,9 +17,9 @@ from randaugment import RandAugment
 from models import get_model
 from datasets import get_dataset
 from utils.augment import Cutout
-from utils.memory import Memory, DummyMemory
+from utils.memory import Memory
 from utils.online_sampler import OnlineSampler, OnlineTestSampler
-from utils.tensor_dataset import TensorDataset
+from utils.indexed_dataset import IndexedDataset
 from utils.train_utils import select_optimizer, select_scheduler
 
 ########################################################################################################################
@@ -102,14 +102,11 @@ class _Trainer():
             self.temp_batchsize = self.batchsize
         self.memory_batchsize = self.batchsize - self.temp_batchsize
 
-        self.exposed_classes = []
-        
         os.makedirs(f"{self.log_path}/logs/{self.dataset_name}/{self.note}", exist_ok=True)
-        os.makedirs(f"{self.log_path}/tensorboard/{self.dataset_name}/{self.note}", exist_ok=True)
 
     def setup_distributed_model(self):
         print("Building model...")
-        self.model = self.model(self.dataset, self.n_classes, self.selection_size).to(self.device)
+        self.model = self.model.to(self.device)
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
         
         self.model.to(self.device)
@@ -130,52 +127,37 @@ class _Trainer():
 
     def setup_dataset(self):
         # get dataset
-        self.train_dataset = self.dataset(root=self.data_dir, train=True, download=True, transform=self.train_transform)
+        self.train_dataset = self.dataset(root=self.data_dir, train=True, download=True, transform=transforms.ToTensor())
         self.test_dataset = self.dataset(root=self.data_dir, train=False, download=True, transform=self.test_transform)
         self.n_classes = len(self.train_dataset.classes)
 
-        # prefetch dataset
-        self.train_images = []
-        self.train_labels = []
-        self.test_images = []
-        self.test_labels = []
-        for images, labels in self.train_dataset:
-            self.train_images.append(images)
-            self.train_labels.append(labels)
-        self.train_images = np.concatenate(self.train_images)
-        self.train_labels = np.array(self.train_labels)
-        for images, labels in self.test_dataset:
-            self.test_images.append(images)
-            self.test_labels.append(labels)
-        self.test_images = np.concatenate(self.test_images)
-        self.test_labels = np.array(self.test_labels)
+        self.exposed_classes = []
+        self.mask = torch.zeros(self.n_classes, device=self.device) - torch.inf
+        self.seen = 0
 
     def setup_transforms(self):
         train_transform = []
         self.cutmix = "cutmix" in self.transforms 
-        if "cutout" in self.transforms:
-            train_transform.append(Cutout(size=16))
-            if self.gpu_transform:
-                self.gpu_transform = False
-        if "randaug" in self.transforms:
-            train_transform.append
-            (RandAugment())
-            if self.gpu_transform:
-                self.gpu_transform = False
         if "autoaug" in self.transforms:
+            train_transform.append(lambda x: (x*255).type(torch.uint8))
             if 'cifar' in self.dataset_name:
                 train_transform.append(transforms.AutoAugment(transforms.AutoAugmentPolicy('cifar10')))
             elif 'imagenet' in self.dataset_name:
                 train_transform.append(transforms.AutoAugment(transforms.AutoAugmentPolicy('imagenet')))
             elif 'svhn' in self.dataset_name:
                 train_transform.append(transforms.AutoAugment(transforms.AutoAugmentPolicy('svhn')))
+            train_transform.append(lambda x: x.type(torch.float32)/255)
+            
+        if "cutout" in self.transforms:
+            train_transform.append(Cutout(size=16))
+        if "randaug" in self.transforms:
+            train_transform.append(RandAugment())
 
         self.train_transform = transforms.Compose([
+                *train_transform,
                 transforms.Resize((self.inp_size, self.inp_size)),
                 transforms.RandomCrop(self.inp_size, padding=4),
                 transforms.RandomHorizontalFlip(),
-                *train_transform,
-                transforms.ToTensor(),
                 transforms.Normalize(self.mean, self.std),])
         self.test_transform = transforms.Compose([
                 transforms.Resize((self.inp_size, self.inp_size)),
@@ -197,6 +179,9 @@ class _Trainer():
             if 'SLURM_PROCID' in os.environ.keys():
                 self.rank = int(os.environ['SLURM_PROCID']) * self.ngpus_per_nodes + self.gpu
                 print(f"| Init Process group {os.environ['SLURM_PROCID']} : {self.local_rank}")
+            elif 'WORLD_SIZE' in os.environ.keys():
+                self.rank = int(os.environ['RANK']) * self.ngpus_per_nodes + self.gpu
+                print(f"| Init Process group {os.environ['RANK']} : {self.local_rank}")
             else :
                 self.rank = self.gpu
                 print(f"| Init Process group 0 : {self.local_rank}")
@@ -226,22 +211,23 @@ class _Trainer():
                 'from checkpoints.')
         cudnn.benchmark = False
 
-        print(f"[1] Select a CIL method ({self.mode})")
+        print(f"Select a CIL method ({self.mode})")
 
-        self.model, self.inp_size = get_model(self.model_name)
-        self.dataset, self.mean, self.std = get_dataset(self.dataset_name)
+        self.dataset, self.mean, self.std, self.n_classes = get_dataset(self.dataset_name)
+        print(f"Building model ({self.model_name})")
+        self.model, self.inp_size = get_model(self.model_name, num_classes = self.n_classes)
         self.setup_transforms()
         self.setup_dataset()
         self.setup_distributed_model()
         self.memory = Memory()
         self.total_samples = len(self.train_dataset)
 
-        self.train_sampler = OnlineSampler(self.trian_dataset, self.n_tasks, self.m, self.n, self.rnd_NM, self.rnd_seed, self.selection_size)
-        self.train_dataloader = DataLoader(self.trian_dataset, batch_size=self.batchsize, sampler=self.train_sampler, num_workers=self.n_worker, pin_memory=True)
-
+        train_dataset = IndexedDataset(self.train_dataset)
+        self.train_sampler = OnlineSampler(train_dataset, self.n_tasks, self.m, self.n, self.rnd_seed, self.rnd_NM, self.selection_size)
+        self.train_dataloader = DataLoader(train_dataset, batch_size=self.batchsize, sampler=self.train_sampler, num_workers=self.n_worker, pin_memory=True)
         self.test_dataloader = DataLoader(self.test_dataset, batch_size=self.batchsize, shuffle=False, num_workers=self.n_worker, pin_memory=True)
 
-        print(f"[2] Incrementally training {self.n_tasks} tasks")
+        print(f"Incrementally training {self.n_tasks} tasks")
         task_records = defaultdict(list)
         eval_results = defaultdict(list)
         samples_cnt = 0
@@ -253,7 +239,7 @@ class _Trainer():
                 return
 
             print("\n" + "#" * 50)
-            print(f"# Task {task_id} iteration")
+            print(f"# Task {task_id} Session")
             print("#" * 50 + "\n")
             print("[2-1] Prepare a datalist for the current task")
             
@@ -263,11 +249,9 @@ class _Trainer():
                 if self.debug and (i+1) * self.temp_batchsize >= 500:
                     break
                 samples_cnt += images.size(0) * self.world_size
-
                 loss, acc = self.online_step(images, labels, idx)
                 self.report_training(samples_cnt, loss, acc)
-
-                if samples_cnt + images.size(0) * self.world_size > num_eval:
+                if samples_cnt > num_eval:
                     with torch.no_grad():
                         test_sampler = OnlineTestSampler(self.test_dataset, self.exposed_classes)
                         test_dataloader = DataLoader(self.test_dataset, batch_size=self.batchsize*2, sampler=test_sampler, num_workers=self.n_worker)
@@ -281,16 +265,17 @@ class _Trainer():
                             eval_results["test_acc"].append(eval_dict['avg_acc'])
                             eval_results["avg_acc"].append(eval_dict['cls_acc'])
                             eval_results["data_cnt"].append(num_eval)
-                            self.report_test(num_eval, eval_dict["avg_loss"], eval_dict['avg_acc'])
+                            self.report_test(samples_cnt, eval_dict["avg_loss"], eval_dict['avg_acc'])
                         num_eval += self.eval_period
                 sys.stdout.flush()
+            self.report_test(samples_cnt, eval_dict["avg_loss"], eval_dict['avg_acc'])
             self.online_after_task(task_id)
             
             test_sampler = OnlineTestSampler(self.test_dataset, self.exposed_classes)
             test_dataloader = DataLoader(self.test_dataset, batch_size=self.batchsize*2, sampler=test_sampler, num_workers=self.n_worker)
             eval_dict = self.online_evaluate(test_dataloader)
             #! after training done
-            self.report_test(num_eval, eval_dict["avg_loss"], eval_dict['avg_acc'])
+            # self.report_test(num_eval, eval_dict["avg_loss"], eval_dict['avg_acc'])
             
             if self.distributed:
                 eval_dict =  torch.tensor([eval_dict['avg_loss'], eval_dict['avg_acc'], *eval_dict['cls_acc']], device=self.device)
@@ -305,11 +290,11 @@ class _Trainer():
 
             print("[2-5] Report task result")
         if self.is_main_process():        
-            np.save(f"{self.log_path}/logs/{self.dataset}/{self.note}/seed_{self.rnd_seed}.npy", task_records["task_acc"])
+            np.save(f"{self.log_path}/logs/{self.dataset_name}/{self.note}/seed_{self.rnd_seed}.npy", task_records["task_acc"])
 
             if self.eval_period is not None:
-                np.save(f'{self.log_path}/logs/{self.dataset}/{self.note}/seed_{self.rnd_seed}_eval.npy', eval_results['test_acc'])
-                np.save(f'{self.log_path}/logs/{self.dataset}/{self.note}/seed_{self.rnd_seed}_eval_time.npy', eval_results['data_cnt'])
+                np.save(f'{self.log_path}/logs/{self.dataset_name}/{self.note}/seed_{self.rnd_seed}_eval.npy', eval_results['test_acc'])
+                np.save(f'{self.log_path}/logs/{self.dataset_name}/{self.note}/seed_{self.rnd_seed}_eval_time.npy', eval_results['data_cnt'])
     
             # Accuracy (A)
             A_auc = np.mean(eval_results["test_acc"])
@@ -472,7 +457,7 @@ class _Trainer():
             print(f"[Train] Task{t_i} Data Info")
             print(data_info);print()
             convert_data_info = self.convert_class_label(data_info)
-            np.save(f"{self.log_path}/logs/{self.dataset}/{self.note}/seed_{self.rnd_seed}_task{t_i}_train_data.npy", convert_data_info)
+            np.save(f"{self.log_path}/logs/{self.dataset_name}/{self.note}/seed_{self.rnd_seed}_task{t_i}_train_data.npy", convert_data_info)
             print(convert_data_info)
             
             print()

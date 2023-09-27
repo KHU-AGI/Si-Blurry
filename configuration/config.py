@@ -124,11 +124,11 @@ def base_parser():
     # parser.add_argument('--use_dyna_exp', action='store_true', help='use dynamic expand for our method')
     
     parser.add_argument('--use_afs', action='store_true', help='enable Adaptive Feature Scaling (AFS) in ours')
-    parser.add_argument('--use_mcr', action='store_true', help='enable Minor-Class Reinforcement (MCR) in ours')
+    parser.add_argument('--use_gsf', action='store_true', help='enable Minor-Class Reinforcement (MCR) in ours')
     
     parser.add_argument('--selection_size', type=int, default=1, help='# candidates to use for ViT_Prompt')
     parser.add_argument('--alpha', type=float, default=0.5, help='# candidates to use for STR hyperparameter')
-    parser.add_argument('--gamma', type=float, default=1., help='# candidates to use for STR hyperparameter')
+    parser.add_argument('--gamma', type=float, default=2., help='# candidates to use for STR hyperparameter')
     parser.add_argument('--margin', type=float, default=0.5, help='# candidates to use for STR hyperparameter')
 
     parser.add_argument('--profile', action='store_true', help='enable profiling for ViT_Prompt')

@@ -4,13 +4,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import logging
-from torch.utils.tensorboard import SummaryWriter
 import timm
 from timm.models.registry import register_model
 from timm.models.vision_transformer import _cfg, default_cfgs,_create_vision_transformer
 
 logger = logging.getLogger()
-writer = SummaryWriter("tensorboard")
 
 T = TypeVar('T', bound = 'nn.Module')
 
@@ -97,7 +95,7 @@ class L2P(nn.Module):
                  selection_size : int   = 5,
                  prompt_len     : int   = 5,
                  num_classes    : int   = 100,
-                 backbone_name  : str   = None,
+                 backbone_name  : str   = 'vit_base_patch16_224_l2p',
                  lambd          : float = 0.5,
                  _batchwise_selection  : bool = False,
                  _diversed_selection   : bool = True,
@@ -123,8 +121,8 @@ class L2P(nn.Module):
                                                              drop_rate=0.,drop_path_rate=0.,drop_block_rate=None))
         for name, param in self.backbone.named_parameters():
                 param.requires_grad = False
-        self.backbone.fc.weight.requires_grad = True
-        self.backbone.fc.bias.requires_grad   = True
+        self.backbone.head.weight.requires_grad = True
+        self.backbone.head.bias.requires_grad   = True
 
         self.prompt = Prompt(
             pool_size,
@@ -161,7 +159,7 @@ class L2P(nn.Module):
         x = x[:, 1:self.selection_size * self.prompt_len + 1].clone()
         x = x.mean(dim=1)
         x = self.backbone.fc_norm(x)
-        x = self.backbone.fc(x)
+        x = self.backbone.head(x)
         return x
     
     def loss_fn(self, output, target):

@@ -5,7 +5,6 @@ import pandas as pd
 import torch
 from torch import optim
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
 from utils.augment import Cutout, Invert, Solarize, select_autoaugment
 from torchvision import transforms
 from randaugment.randaugment import RandAugment
@@ -15,7 +14,6 @@ from utils.datasets import ImageDataset
 from utils.augment import Cutout, Invert, Solarize, select_autoaugment
 from utils.memory import MemoryBatchSampler, MemoryOrderedSampler
 logger = logging.getLogger()
-writer = SummaryWriter("tensorboard")
 
 def cycle(iterable):
     # iterate with shuffling

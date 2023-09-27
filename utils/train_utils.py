@@ -1,15 +1,7 @@
 import torch_optimizer
-from easydict import EasyDict as edict
 from torch.nn import Module
 from torch import optim
 from torch.optim import lr_scheduler
-
-import timm
-from timm.models.registry import register_model
-from timm.models.vision_transformer import _cfg, _create_vision_transformer, default_cfgs
-from timm.models import create_model
-from models.l2p import L2P
-from models.dualprompt import DualPrompt
 
 def cycle(iterable):
     # iterate with shuffling

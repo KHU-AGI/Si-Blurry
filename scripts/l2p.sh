@@ -1,6 +1,6 @@
 #!/bin/bash
 
-NOTE="ER_CIFAR_2000" # Short description of the experiment. (WARNING: logs/results with the same note will be overwritten!)
+NOTE="L2P_CIFAR_2000" # Short description of the experiment. (WARNING: logs/results with the same note will be overwritten!)
 
 MODE="er"
 DATASET="cifar100" # cifar10, cifar100, tinyimagenet, imagenet
@@ -12,18 +12,18 @@ USE_AMP="--use_amp"
 SEEDS=$SLURM_ARRAY_TASK_ID
 
 if [ "$DATASET" == "cifar100" ]; then
-    MEM_SIZE=2000 ONLINE_ITER=3
-    MODEL_NAME="vit_base" EVAL_PERIOD=1000
+    MEM_SIZE=0 ONLINE_ITER=3
+    MODEL_NAME="l2p" EVAL_PERIOD=1000
     BATCHSIZE=64; LR=5e-3 OPT_NAME="adam" SCHED_NAME="default"
 
 elif [ "$DATASET" == "tinyimagenet" ]; then
-    MEM_SIZE=2000 ONLINE_ITER=3
-    MODEL_NAME="vit_base" EVAL_PERIOD=1000
+    MEM_SIZE=0 ONLINE_ITER=3
+    MODEL_NAME="l2p" EVAL_PERIOD=1000
     BATCHSIZE=64; LR=5e-3 OPT_NAME="adam" SCHED_NAME="default"
 
 elif [ "$DATASET" == "imagenet-r" ]; then
-    MEM_SIZE=2000 ONLINE_ITER=3
-    MODEL_NAME="vit_base" EVAL_PERIOD=1000
+    MEM_SIZE=0 ONLINE_ITER=3
+    MODEL_NAME="l2p" EVAL_PERIOD=1000
     BATCHSIZE=64; LR=5e-3 OPT_NAME="adam" SCHED_NAME="default"
 else
     echo "Undefined setting"

@@ -1,9 +1,6 @@
 import logging
 import copy
-import time
-import math
 
-import torch.distributed as dist
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -15,7 +12,6 @@ from methods.er_baseline import ER
 from utils.memory import MemoryBatchSampler, MemoryOrderedSampler
 from utils.memory import Memory
 from datasets import *
-from utils.online_sampler import OnlineSampler, OnlineTestSampler
 
 logger = logging.getLogger()
 
@@ -42,9 +38,9 @@ class CLIB(ER):
         self.low_lr_loss = []
         self.current_lr = self.lr
 
-    def setup_distributed_dataset(self):
-        super(CLIB, self).setup_distributed_dataset()
-        self.loss_update_dataset = self.datasets[self.dataset](root=self.data_dir, train=True, download=True,
+    def setup_dataset(self):
+        super(CLIB, self).setup_dataset()
+        self.loss_update_dataset = self.dataset(root=self.data_dir, train=True, download=True,
                                      transform=transforms.Compose([transforms.Resize((self.inp_size,self.inp_size)),
                                                                    transforms.ToTensor()]))
         self.memory = Memory(data_source=self.loss_update_dataset)
@@ -57,7 +53,7 @@ class CLIB(ER):
         self.memory_provider     = iter(self.memory_dataloader)
         # train with augmented batches
         _loss, _acc, _iter = 0.0, 0.0, 0
-        for _ in range(int(self.online_iter) * self.temp_batchsize * self.world_size): # * self.temp_batchsize * self.world_size
+        for _ in range(int(self.online_iter)): # * self.temp_batchsize * self.world_size
             loss, acc = self.online_train([torch.empty(0), torch.empty(0)])
             _loss += loss
             _acc += acc
@@ -73,7 +69,6 @@ class CLIB(ER):
             label = torch.cat(self.all_gather(label.to(self.device)))
             index = index.cpu()
             label = label.cpu()
-        
         for x, y in zip(index, label):
             if len(self.memory) >= self.memory_size:
                 label_frequency = copy.deepcopy(self.memory.cls_count)
@@ -223,13 +218,16 @@ class CLIB(ER):
             if len(self.memory) > 0:
                 self.model.eval()
                 with torch.no_grad():
+
+                    memory_ordered_sampler = MemoryOrderedSampler(self.memory, self.memory_batchsize, self.temp_batchsize * self.online_iter * self.world_size)
+                    memory_dataloader = DataLoader(self.loss_update_dataset, batch_size=self.memory_batchsize, sampler=memory_ordered_sampler, num_workers=0)
                     logit = []
                     label = []
                     # loss = []
                     with torch.cuda.amp.autocast(enabled=self.use_amp):
-                        for i in range(0, math.ceil(len(self.memory) / batchsize)):
-                            logit.append(self.model(torch.cat(self.memory.images[i*batchsize:min((i+1)*batchsize, len(self.memory)):self.world_size]).to(self.device)) + self.mask)
-                            label.append(self.memory.labels[i*batchsize:min((i+1)*batchsize, len(self.memory)):self.world_size].to(self.device))
+                        for (x, y) in memory_dataloader:
+                            logit.append(self.model(x.to(self.device)) + self.mask)
+                            label.append(y.to(self.device))
                         logits = torch.cat(logit)
                         labels = torch.cat(label)
                     #         logit = self.model(torch.cat(self.memory.images[i*batchsize:min((i+1)*batchsize, len(self.memory)):self.world_size]).to(self.device)) + self.mask

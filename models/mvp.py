@@ -37,12 +37,12 @@ class MVP(nn.Module):
                  selection_size : int   = 1,
                  prompt_func    : str   = 'prompt_tuning',
                  task_num       : int   = 10,
-                 class_num      : int   = 100,
+                 num_classes    : int   = 100,
                  lambd          : float = 1.0,
                  use_mask       : bool  = True,
                  use_contrastiv : bool  = False,
                  use_last_layer : bool  = True,
-                 backbone_name  : str   = None,
+                 backbone_name  : str   = 'vit_base_patch16_224_l2p',
                  **kwargs):
 
         super().__init__()
@@ -53,19 +53,19 @@ class MVP(nn.Module):
         if backbone_name is None:
             raise ValueError('backbone_name must be specified')
         self.lambd       = lambd
-        self.class_num   = class_num
+        self.class_num   = num_classes
         self.task_num    = task_num
         self.use_mask    = use_mask
         self.use_contrastiv  = use_contrastiv
         self.use_last_layer  = use_last_layer
         self.selection_size  = selection_size
 
-        self.add_module('backbone', timm.models.create_model(backbone_name, pretrained=True, num_classes=class_num,
+        self.add_module('backbone', timm.models.create_model(backbone_name, pretrained=True, num_classes=num_classes,
                                                              drop_rate=0.,drop_path_rate=0.,drop_block_rate=None))
         for name, param in self.backbone.named_parameters():
                 param.requires_grad = False
-        self.backbone.fc.weight.requires_grad = True
-        self.backbone.fc.bias.requires_grad   = True
+        self.backbone.head.weight.requires_grad = True
+        self.backbone.head.bias.requires_grad   = True
 
         self.register_buffer('pos_g_prompt', torch.tensor(pos_g_prompt, dtype=torch.int64))
         self.register_buffer('pos_e_prompt', torch.tensor(pos_e_prompt, dtype=torch.int64))
@@ -220,7 +220,7 @@ class MVP(nn.Module):
     
     def forward_head(self, feature : torch.Tensor, **kwargs) -> torch.Tensor:
         x = self.backbone.fc_norm(feature)
-        x = self.backbone.fc(x)
+        x = self.backbone.head(x)
         # if self.use_mask:
         #     x = x * mask
         return x

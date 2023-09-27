@@ -1,2 +1,6 @@
 *.pyc
 tensorboard/*
+results/*
+*.log
+*.err
+```
