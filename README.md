@@ -4,6 +4,7 @@
 Official PyTorch implementation for ICCV 2023 paper:
 
 Online Class Incremental Learning on Stochastic Blurry Task Boundary via Mask and Visual Prompt Tuning
+
 Jun-Yeong Moon* Keon-Hee Park* Jung Uk Kim† Gyeong-Moon Park†
 
 ## Abstract
