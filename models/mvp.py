@@ -204,7 +204,7 @@ class MVP(nn.Module):
         if self.use_contrastiv:
         if self.use_contrastiv:
             key_wise_distance = 1 - F.cosine_similarity(self.model_without_ddp.key.unsqueeze(1), self.model_without_ddp.key.detach(), dim=-1)
-            self.model_without_ddp.similarity_loss = -((key_wise_distance[topk] / mass[topk]).exp().mean() / ((key_wise_distance / mass).exp().mean())).log()
+            self.model_without_ddp.similarity_loss = -((key_wise_distance[topk,topk] / mass[topk,topk]).exp().mean() / ((key_wise_distance[topk] / mass[topk]).exp().mean())).log()
         else:
             self.similarity_loss = distance.mean()
 
